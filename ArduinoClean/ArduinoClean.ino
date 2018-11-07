@@ -38,7 +38,16 @@ Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1(LSM9DS1_XGCS, LSM9DS1_MCS);
 float SERVOANGLENEUT = 98; //set this to the neutral point of the servo
 float pingDistanceCM = 0.0; //ping sensor var
 float gyroZbias = 0.8; //degrees per second
+
+
+//COMMAND LIST
 byte piCommand = 1;
+const byte psiDCom = 0; //DO NOT CHANGE THIS NEEDS TO BE THE SAME BETWEEN ARDUINO AND PI
+const byte  dSpeedCom = 1; //DO NOT CHANGE THIS NEEDS TO BE THE SAME BETWEEN ARDUINO AND 
+const byte  gpsLatCom = 2;
+const byte  gpsLonCom = 3;
+const byte  gpsVCom = 4;
+const byte  gpsPsiCom = 5;
 
 //gps vars. Default all to 0
 float DEF = 0;
@@ -58,7 +67,9 @@ Adafruit_GPS GPS(&Serial1);
 //
 // Global variables deciding what our robot should be doing
 byte motorPWM=150; //needs to be between 0-255. this is motor speed
-float desHeading = 0;
+float psiD = 0;
+float dSpeed = 0;
+
 
 
 
@@ -102,7 +113,7 @@ void setup() {
 void loop() {
   unsigned long time = millis(); //keep track of how long its been since the loop started. want to loop every 20 milliseconds
 
-  static float estHeading = desHeading;
+  static float estHeading = psiD;
   float* estHeadAddr = &estHeading; //maintain an address to the heading angle so we don't need to make a global variable
  
   
@@ -110,7 +121,7 @@ void loop() {
   updateGPSData(); //updates our GPS data for
   getDesiredHeading(); //read desired heading from the Pi
 
-  correctHeading(desHeading, estHeadAddr); //keep track of the estimated heading angle and correct it as needed.
+  correctHeading(psiD, estHeadAddr); //keep track of the estimated heading angle and correct it as needed.
 
 //
 //  pause waiting for 20 milliseconds
@@ -125,7 +136,7 @@ void loop() {
 ////////////////////////////////////////////////////////////
 // Adjust wheels to set self to correct heading
 ////////////////////////////////////////////////////////////
-float correctHeading(float desHeading, float* estHeadingAddr) {
+float correctHeading(float psiD, float* estHeadingAddr) {
 
   //gyro readings
   lsm.read();  /* ask it to read in the data */
@@ -147,13 +158,13 @@ float correctHeading(float desHeading, float* estHeadingAddr) {
   *estHeadingAddr += deltaAng;  
   *estHeadingAddr = wrapAngle360(*estHeadingAddr); //prevent large jumps across 0
 
-  float servoAngleDeg = SERVOANGLENEUT - headingK * (desHeading - *estHeadingAddr);
+  float servoAngleDeg = SERVOANGLENEUT - headingK * (psiD - *estHeadingAddr);
    steeringServo.write(constrain(servoAngleDeg, SERVOANGLENEUT-15, SERVOANGLENEUT+15));
 
    //every half second print important info to serial montior
    if(count >= 25) {
    Serial.print("Estimated Heading: "); Serial.println(*estHeadingAddr);
-   Serial.print("Desired Heading: "); Serial.println(desHeading);
+   Serial.print("Desired Heading: "); Serial.println(psiD);
    Serial.print("GPS Heading: "); Serial.println(gpsPsi);
    Serial.print("Wheel Angle: "); Serial.println(constrain(servoAngleDeg, SERVOANGLENEUT-25, SERVOANGLENEUT+25));
    Serial.println();
@@ -290,6 +301,68 @@ void receiveData(int byteCount) {
   }
 }
 
+//Assumes data is sent as a series of chars 'command number' 'number of chars' 'numbers'
+void receiveData2(int byteCount){
+  piCommand = Wire.read(); //this line is essential. do not change it
+  int comSize;
+
+  if(piCommand == psiDCom || piCommand == dSpeedCom){
+    char comNum[byteCount];
+    int idx = 0;
+    while(idx < byteCount && Wire.available()) {
+     char nextChar = Wire.read();
+     comNum[idx] = nextChar;
+     idx ++; 
+    }
+    
+    while(Wire.available()) {
+     Wire.read(); //clear the wire buffer 
+    }
+     
+    float newVal = string2float(comNum);
+    mapToData(piCommand, newVal);
+      
+    
+  }
+}
+
+//Horrendous hack to convert a character array into a floating point decimal
+float string2float(char theStr[]){
+  float retVal = 0;
+  int decPointIdx = -1;
+  for(int i = 0; i < sizeof(theStr); i++){
+    char curChar = theStr[i];
+    if(curChar == '.'){
+      decPointIdx = i;
+    }
+    else {
+      retVal = retVal * 10 + (int)(curChar-'0');
+    }
+  }
+  if(decPointIdx != -1)
+  {
+    retVal = retVal / pow(10, decPointIdx+1);
+  }
+  
+  return retVal;
+}
+
+
+//map new value to data
+void mapToData(byte command, float newVal){
+  switch (command) {
+    case psiDCom:
+      psiD = newVal;
+      break;
+    
+    case dSpeedCom:
+      dSpeed = newVal;
+      break;
+  
+    default:    
+      break;   
+  }
+}
 ////////////////////////////////////////////////////////////
 // Send Data back to Raspberry Pi
 ////////////////////////////////////////////////////////////
@@ -301,10 +374,47 @@ void sendData() {
         dataBuffer[2] = gpsV;   
         dataBuffer[3] = gpsPsi;
         dataBuffer[4] = gpsNSat;
-        byteArray[0] = (float)((dataBuffer[piCommand] >> 24) & 0xFF) ;
-        byteArray[1] = (float)((dataBuffer[piCommand] >> 16) & 0xFF) ;
-        byteArray[2] = (float)((dataBuffer[piCommand] >> 8) & 0XFF);
-        byteArray[3] = (float)((dataBuffer[piCommand] & 0XFF));
+        //BYTE ARRAY NOT DECLARED IN SCOPE
+        //byteArray[0] = (float)((dataBuffer[piCommand] >> 24) & 0xFF) ;
+        //byteArray[1] = (float)((dataBuffer[piCommand] >> 16) & 0xFF) ;
+        //byteArray[2] = (float)((dataBuffer[piCommand] >> 8) & 0XFF);
+        //byteArray[3] = (float)((dataBuffer[piCommand] & 0XFF));
+}
+
+void sendData2() {
+  //THIS SENDS EXACTLY 9 BYTES. IF YOU CHANGE THIS BE CAREFUL TO CHANGE THE NUMBER OF BYTES READ ON THE OTHER SIDE
+  char byteArray[8];
+  //makes use of dtostrf(val, width of output string, digits after decimal point, bytearray pointer
+  switch (piCommand) {
+    case gpsLatCom:
+      dtostrf(gpsLat, 8, 5, byteArray);
+      Wire.write(byteArray);
+      Wire.write("?");
+    break;
+
+    case gpsLonCom:
+      dtostrf(gpsLon, 8, 5, byteArray);
+      Wire.write(byteArray);
+      Wire.write("?");
+    break;
+
+    case gpsVCom:
+      dtostrf(gpsV, 8, 5, byteArray);
+      Wire.write(byteArray);
+      Wire.write("?");
+    break;
+
+    case gpsPsiCom:
+      dtostrf(gpsLat, 8, 5, byteArray);
+      Wire.write(byteArray);
+      Wire.write("?");
+    break;
+
+    default:
+    break;
+  }
+  
+  
 }
 
 
@@ -333,7 +443,7 @@ void updateGPSData(){
 
 
 void getDesiredHeading(){
-  desHeading = 66;
+  psiD = 66;
 }
 
 
