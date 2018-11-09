@@ -41,7 +41,7 @@ float gyroZbias = 0.8; //degrees per second
 
 
 //COMMAND LIST
-byte piCommand = 1;
+byte piCommand = 0;
 const byte psiDCom = 0; //DO NOT CHANGE THIS NEEDS TO BE THE SAME BETWEEN ARDUINO AND PI
 const byte  dSpeedCom = 1; //DO NOT CHANGE THIS NEEDS TO BE THE SAME BETWEEN ARDUINO AND 
 const byte  gpsLatCom = 2;
@@ -51,7 +51,7 @@ const byte  gpsPsiCom = 5;
 
 //gps vars. Default all to 0
 float DEF = 0;
-float gpsLat = DEF;
+float gpsLat = 25.789;
 float gpsLon = DEF;
 float gpsV = DEF;
 float gpsPsi = DEF;
@@ -68,7 +68,7 @@ Adafruit_GPS GPS(&Serial1);
 // Global variables deciding what our robot should be doing
 byte motorPWM=150; //needs to be between 0-255. this is motor speed
 float psiD = 0;
-float dSpeed = 0;
+float dSpeed = 180;
 
 
 
@@ -77,8 +77,7 @@ Servo steeringServo; //servo name variable
 
 
 void setup() {
-    Serial.begin(115200);       // for sending info to the terminal
-//
+   
 //  make the motors not spin
 //
     pinMode(motorPin,OUTPUT);
@@ -100,12 +99,11 @@ void setup() {
 
     //Prepare Raspberry Pi Communication
     Wire.begin(SLAVE_ADDRESS);
-    Wire.onReceive(receiveData);
-    Wire.onRequest(sendData);
+    Wire.onReceive(receiveData2);
+    Wire.onRequest(sendData2);
 
     //set up GPS
     setupGPS();
-
     Serial.begin(115200);
     
 }
@@ -114,15 +112,24 @@ void loop() {
   unsigned long time = millis(); //keep track of how long its been since the loop started. want to loop every 20 milliseconds
 
   static float estHeading = psiD;
+  static int count = 0;
   float* estHeadAddr = &estHeading; //maintain an address to the heading angle so we don't need to make a global variable
- 
   
   setSpeed(); //set the wheel speed
   updateGPSData(); //updates our GPS data for
-  getDesiredHeading(); //read desired heading from the Pi
-
   correctHeading(psiD, estHeadAddr); //keep track of the estimated heading angle and correct it as needed.
 
+  if(count > 100){
+   //every few seconds print to Serial monitor some debugging information 
+   Serial.println("running");
+   Serial.print("Estimated Heading: "); Serial.println(*estHeadAddr);
+   Serial.print("Desired Heading: "); Serial.println(psiD);
+   Serial.print("GPS Heading: "); Serial.println(gpsPsi);
+   Serial.print("Desired Speed: "); Serial.println(dSpeed);  
+    count = 0;
+   }
+
+  count++;
 //
 //  pause waiting for 20 milliseconds
 //
@@ -130,6 +137,8 @@ void loop() {
    while(millis() <= time + DELAY){
       
    }
+   
+   
 }
 
 
@@ -137,6 +146,7 @@ void loop() {
 // Adjust wheels to set self to correct heading
 ////////////////////////////////////////////////////////////
 float correctHeading(float psiD, float* estHeadingAddr) {
+  //Simple P controller for adjusting heading based on psiD
 
   //gyro readings
   lsm.read();  /* ask it to read in the data */
@@ -146,47 +156,38 @@ float correctHeading(float psiD, float* estHeadingAddr) {
 
   
   float estHeading = *estHeadingAddr; //for computation
-  float tau = 1;
   float deltaTms = 20*0.001; //dt
-  float headingK = 0.5; //constant in controller
+  float headingK = 10;
 
-  
-  float angleDiff = (gpsPsi- estHeading);
-  float deltaAng = (deltaTms)*(1/tau * angleDiff + (g.gyro.z-gyroZbias));
+  float deltaAng = (deltaTms)*(g.gyro.z-gyroZbias);
 
   
   *estHeadingAddr += deltaAng;  
-  *estHeadingAddr = wrapAngle360(*estHeadingAddr); //prevent large jumps across 0
 
   float servoAngleDeg = SERVOANGLENEUT - headingK * (psiD - *estHeadingAddr);
-   steeringServo.write(constrain(servoAngleDeg, SERVOANGLENEUT-15, SERVOANGLENEUT+15));
+   steeringServo.write(constrain(servoAngleDeg, SERVOANGLENEUT-25, SERVOANGLENEUT+25));
 
-   //every half second print important info to serial montior
-   if(count >= 25) {
-   Serial.print("Estimated Heading: "); Serial.println(*estHeadingAddr);
-   Serial.print("Desired Heading: "); Serial.println(psiD);
-   Serial.print("GPS Heading: "); Serial.println(gpsPsi);
-   Serial.print("Wheel Angle: "); Serial.println(constrain(servoAngleDeg, SERVOANGLENEUT-25, SERVOANGLENEUT+25));
-   Serial.println();
-   count = 0;
-   }
-   
-
-  count++;
   return estHeading;
 }
 
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// CONTROL HELPERS
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
+////////////////////////////////////////////////////////////
+// Update Value of speed
+////////////////////////////////////////////////////////////
+void setSpeed() {
+  //
+  //Return the the value of the speed that we wish to drive at
+  //
+  getPingDistanceCM(); //get distance to furthest object
+    
+  // set wheel speed
+  if(pingDistanceCM >= 30){
+    motorPWM = constrain(dSpeed, 0, 250); //set motor speed
+  }
+  else {
+    motorPWM = 0; //emergency stop
+  }
+  analogWrite(motorPin, motorPWM);
+}
 
 ////////////////////////////////////////////////////////////
 // Ping Sensor -- update value of pingDistanceCM
@@ -231,83 +232,30 @@ void getPingDistanceCM()
 }
 
 
-////////////////////////////////////////////////////////////
-// Update Value of speed
-////////////////////////////////////////////////////////////
-void setSpeed() {
-  //
-  //Return the the value of the speed that we wish to drive at
-  //
-  getPingDistanceCM(); //get distance to furthest object
-    
-  // set wheel speed
-  if(pingDistanceCM >= 30){
-    motorPWM = 180; //set motor speed
-  }
-  else {
-    motorPWM = 0; //emergency stop
-  }
-  analogWrite(motorPin, motorPWM);
-}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// CONTROL HELPERS
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-
-
-
-
-////////////////////////////////////////////////////////////
-// Wrap angles around so that 0 = 360
-////////////////////////////////////////////////////////////
-float wrapAngle360(float angle){
-  while (angle < 0) { //while the sum of the degrees is less than 0 keep adding 360 so that we land between 0 and 360
-    angle += 360;
-  }
-  while (angle >= 360) { //subtract too big angles to land in 0 to 360
-    angle -= 360;
-  }
-
-  if ((angle < 360.01) && (angle > 359.99))
-  {
-    angle = 0;
-  }
-
-  return angle;
-}
-
-////////////////////////////////////////////////////////////
-// Wrap angles around so that -180 = 180
-////////////////////////////////////////////////////////////
-float wrapAngle180(float angle){
-  while (angle < -180) { //while the sum of the degrees is less than 0 keep adding 360 so that we land between 0 and 360
-    angle += 360;
-  }
-  while (angle >= 180) { //subtract too big angles to land in 0 to 360
-    angle -= 360;
-  }
-
-  return angle;
-}
 
 ////////////////////////////////////////////////////////////
 // Read data from I2C communication from Raspberry Pi
 ////////////////////////////////////////////////////////////
-void receiveData(int byteCount) {
-  while(Wire.available()){
-    
-    int heading_desired = Wire.read();
-    int current_speed = Wire.read();
-    //will want to publish a desired heading
-    
-  }
-}
 
 //Assumes data is sent as a series of chars 'command number' 'number of chars' 'numbers'
 void receiveData2(int byteCount){
+  //Serial.println("I am here");
   piCommand = Wire.read(); //this line is essential. do not change it
-  int comSize;
+  //Serial.println(piCommand);
+  int comSize = byteCount-1;
 
   if(piCommand == psiDCom || piCommand == dSpeedCom){
-    char comNum[byteCount];
+    char comNum[comSize];
     int idx = 0;
     while(idx < byteCount && Wire.available()) {
      char nextChar = Wire.read();
@@ -319,43 +267,64 @@ void receiveData2(int byteCount){
      Wire.read(); //clear the wire buffer 
     }
      
-    float newVal = string2float(comNum);
+    float newVal = string2float(comNum, comSize-1);
     mapToData(piCommand, newVal);
       
-    
   }
+  while (Wire.available()) {Wire.read();}
 }
 
 //Horrendous hack to convert a character array into a floating point decimal
-float string2float(char theStr[]){
+float string2float(char theStr[], int byteCount){
+  float preDec = 0;
+  float postDec = 0;
   float retVal = 0;
-  int decPointIdx = -1;
-  for(int i = 0; i < sizeof(theStr); i++){
+  bool decPointFlag = false;
+  int decCount = 0;
+  bool negative = false;
+  for(int i = 0; i <= byteCount; i++){
     char curChar = theStr[i];
-    if(curChar == '.'){
-      decPointIdx = i;
+    //Serial.println(curChar);
+    if((char)curChar == '.'){
+      decPointFlag = true;
+    }
+    else if(curChar == '-'){
+      negative = true;
     }
     else {
-      retVal = retVal * 10 + (int)(curChar-'0');
+      if(!decPointFlag){
+        preDec = preDec * 10 + (curChar-48);
+      }
+      if(decPointFlag){
+        postDec = postDec*10+(curChar-48);
+        decCount += 1;
+      }
+      
     }
   }
-  if(decPointIdx != -1)
-  {
-    retVal = retVal / pow(10, decPointIdx+1);
-  }
   
+  retVal = preDec + postDec / pow(10, decCount);
+
+  if(negative) {
+    retVal = -1* retVal;
+  }
   return retVal;
 }
 
 
 //map new value to data
 void mapToData(byte command, float newVal){
+  //Serial.println(command);
   switch (command) {
     case psiDCom:
       psiD = newVal;
+      //Serial.print("new psiD is "); 
+      //Serial.println(psiD,7);
       break;
     
     case dSpeedCom:
+      //Serial.print("new dSpeed is "); 
+      //Serial.println(dSpeed,7);
       dSpeed = newVal;
       break;
   
@@ -363,57 +332,36 @@ void mapToData(byte command, float newVal){
       break;   
   }
 }
+
 ////////////////////////////////////////////////////////////
 // Send Data back to Raspberry Pi
 ////////////////////////////////////////////////////////////
-void sendData() {
-    float dataBuffer[10];
-    byte *b;
-        dataBuffer[0] = gpsLat;
-        dataBuffer[1] = gpsLon;
-        dataBuffer[2] = gpsV;   
-        dataBuffer[3] = gpsPsi;
-        dataBuffer[4] = gpsNSat;
-        //BYTE ARRAY NOT DECLARED IN SCOPE
-        //byteArray[0] = (float)((dataBuffer[piCommand] >> 24) & 0xFF) ;
-        //byteArray[1] = (float)((dataBuffer[piCommand] >> 16) & 0xFF) ;
-        //byteArray[2] = (float)((dataBuffer[piCommand] >> 8) & 0XFF);
-        //byteArray[3] = (float)((dataBuffer[piCommand] & 0XFF));
-}
 
 void sendData2() {
-  //THIS SENDS EXACTLY 9 BYTES. IF YOU CHANGE THIS BE CAREFUL TO CHANGE THE NUMBER OF BYTES READ ON THE OTHER SIDE
-  char byteArray[8];
-  //makes use of dtostrf(val, width of output string, digits after decimal point, bytearray pointer
+  //Sends back exactly one float of data. If you change this take care to make adjustment on the raspberry pi side
+  float dataBuffer[1];
   switch (piCommand) {
     case gpsLatCom:
-      dtostrf(gpsLat, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsLat;
     break;
 
     case gpsLonCom:
-      dtostrf(gpsLon, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsLon;
     break;
 
     case gpsVCom:
-      dtostrf(gpsV, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsV;
     break;
 
     case gpsPsiCom:
-      dtostrf(gpsLat, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsPsi;
     break;
 
-    default:
-    break;
+   default:
+   break;
   }
-  
+
+  Wire.write((byte*) &dataBuffer[0], sizeof(float));
   
 }
 
@@ -441,10 +389,6 @@ void updateGPSData(){
     }
 }
 
-
-void getDesiredHeading(){
-  psiD = 66;
-}
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -515,10 +459,3 @@ SIGNAL(TIMER0_COMPA_vect) {
    char c = GPS.read();
 } 
 
-float DegToRad(float angle) {
-  return angle*PI/180.0;
-}
-
-float RadToDeg(float angle) {
-  return angle*180.0/PI;
-}
