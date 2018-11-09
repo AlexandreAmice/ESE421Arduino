@@ -41,7 +41,7 @@ float gyroZbias = 0.8; //degrees per second
 
 
 //COMMAND LIST
-byte piCommand = 1;
+byte piCommand = 0;
 const byte psiDCom = 0; //DO NOT CHANGE THIS NEEDS TO BE THE SAME BETWEEN ARDUINO AND PI
 const byte  dSpeedCom = 1; //DO NOT CHANGE THIS NEEDS TO BE THE SAME BETWEEN ARDUINO AND 
 const byte  gpsLatCom = 2;
@@ -51,7 +51,7 @@ const byte  gpsPsiCom = 5;
 
 //gps vars. Default all to 0
 float DEF = 0;
-float gpsLat = DEF;
+float gpsLat = 25.789;
 float gpsLon = DEF;
 float gpsV = DEF;
 float gpsPsi = DEF;
@@ -77,8 +77,7 @@ Servo steeringServo; //servo name variable
 
 
 void setup() {
-    Serial.begin(115200);       // for sending info to the terminal
-//
+   
 //  make the motors not spin
 //
     pinMode(motorPin,OUTPUT);
@@ -100,11 +99,11 @@ void setup() {
 
     //Prepare Raspberry Pi Communication
     Wire.begin(SLAVE_ADDRESS);
-    Wire.onReceive(receiveData);
-    Wire.onRequest(sendData);
+    Wire.onReceive(receiveData2);
+    Wire.onRequest(sendData2);
 
     //set up GPS
-    setupGPS();
+    //setupGPS();
 
     Serial.begin(115200);
     
@@ -114,11 +113,11 @@ void loop() {
   unsigned long time = millis(); //keep track of how long its been since the loop started. want to loop every 20 milliseconds
 
   static float estHeading = psiD;
+  static int count = 0;
   float* estHeadAddr = &estHeading; //maintain an address to the heading angle so we don't need to make a global variable
- 
   
   setSpeed(); //set the wheel speed
-  updateGPSData(); //updates our GPS data for
+  //updateGPSData(); //updates our GPS data for
   getDesiredHeading(); //read desired heading from the Pi
 
   correctHeading(psiD, estHeadAddr); //keep track of the estimated heading angle and correct it as needed.
@@ -130,6 +129,11 @@ void loop() {
    while(millis() <= time + DELAY){
       
    }
+   if(count > 100){
+    Serial.println("running");
+    count = 0;
+   }
+   count++;
 }
 
 
@@ -162,12 +166,12 @@ float correctHeading(float psiD, float* estHeadingAddr) {
    steeringServo.write(constrain(servoAngleDeg, SERVOANGLENEUT-15, SERVOANGLENEUT+15));
 
    //every half second print important info to serial montior
-   if(count >= 25) {
-   Serial.print("Estimated Heading: "); Serial.println(*estHeadingAddr);
-   Serial.print("Desired Heading: "); Serial.println(psiD);
-   Serial.print("GPS Heading: "); Serial.println(gpsPsi);
-   Serial.print("Wheel Angle: "); Serial.println(constrain(servoAngleDeg, SERVOANGLENEUT-25, SERVOANGLENEUT+25));
-   Serial.println();
+   if(count >= 500) {
+//   Serial.print("Estimated Heading: "); Serial.println(*estHeadingAddr);
+//   Serial.print("Desired Heading: "); Serial.println(psiD);
+//   Serial.print("GPS Heading: "); Serial.println(gpsPsi);
+//   Serial.print("Wheel Angle: "); Serial.println(constrain(servoAngleDeg, SERVOANGLENEUT-25, SERVOANGLENEUT+25));
+   
    count = 0;
    }
    
@@ -291,23 +295,16 @@ float wrapAngle180(float angle){
 ////////////////////////////////////////////////////////////
 // Read data from I2C communication from Raspberry Pi
 ////////////////////////////////////////////////////////////
-void receiveData(int byteCount) {
-  while(Wire.available()){
-    
-    int heading_desired = Wire.read();
-    int current_speed = Wire.read();
-    //will want to publish a desired heading
-    
-  }
-}
 
 //Assumes data is sent as a series of chars 'command number' 'number of chars' 'numbers'
 void receiveData2(int byteCount){
+  //Serial.println("I am here");
   piCommand = Wire.read(); //this line is essential. do not change it
-  int comSize;
+  Serial.println(piCommand);
+  int comSize = byteCount-1;
 
   if(piCommand == psiDCom || piCommand == dSpeedCom){
-    char comNum[byteCount];
+    char comNum[comSize];
     int idx = 0;
     while(idx < byteCount && Wire.available()) {
      char nextChar = Wire.read();
@@ -319,43 +316,64 @@ void receiveData2(int byteCount){
      Wire.read(); //clear the wire buffer 
     }
      
-    float newVal = string2float(comNum);
+    float newVal = string2float(comNum, comSize-1);
     mapToData(piCommand, newVal);
       
-    
   }
+  while (Wire.available()) {Wire.read();}
 }
 
 //Horrendous hack to convert a character array into a floating point decimal
-float string2float(char theStr[]){
+float string2float(char theStr[], int byteCount){
+  float preDec = 0;
+  float postDec = 0;
   float retVal = 0;
-  int decPointIdx = -1;
-  for(int i = 0; i < sizeof(theStr); i++){
+  bool decPointFlag = false;
+  int decCount = 0;
+  bool negative = false;
+  for(int i = 0; i <= byteCount; i++){
     char curChar = theStr[i];
-    if(curChar == '.'){
-      decPointIdx = i;
+    //Serial.println(curChar);
+    if((char)curChar == '.'){
+      decPointFlag = true;
+    }
+    else if(curChar == '-'){
+      negative = true;
     }
     else {
-      retVal = retVal * 10 + (int)(curChar-'0');
+      if(!decPointFlag){
+        preDec = preDec * 10 + (curChar-48);
+      }
+      if(decPointFlag){
+        postDec = postDec*10+(curChar-48);
+        decCount += 1;
+      }
+      
     }
   }
-  if(decPointIdx != -1)
-  {
-    retVal = retVal / pow(10, decPointIdx+1);
-  }
   
+  retVal = preDec + postDec / pow(10, decCount);
+
+  if(negative) {
+    retVal = -1* retVal;
+  }
   return retVal;
 }
 
 
 //map new value to data
 void mapToData(byte command, float newVal){
+  Serial.println(command);
   switch (command) {
     case psiDCom:
       psiD = newVal;
+      Serial.print("new psiD is "); 
+      Serial.println(psiD,7);
       break;
     
     case dSpeedCom:
+      Serial.print("new dSpeed is "); 
+      Serial.println(dSpeed,7);
       dSpeed = newVal;
       break;
   
@@ -383,36 +401,39 @@ void sendData() {
 
 void sendData2() {
   //THIS SENDS EXACTLY 9 BYTES. IF YOU CHANGE THIS BE CAREFUL TO CHANGE THE NUMBER OF BYTES READ ON THE OTHER SIDE
-  char byteArray[8];
+  float dataBuffer[1];
+  //Serial.println("Please send me data ");
+//  if(piCommand == 2){  
+//    dataBuffer[0] = gpsLat;
+//    Serial.println(sizeof(float));
+//    Wire.write((byte*) &dataBuffer[0], sizeof(float));
+//  }
+//  else{
+//    
+//  }
   //makes use of dtostrf(val, width of output string, digits after decimal point, bytearray pointer
   switch (piCommand) {
     case gpsLatCom:
-      dtostrf(gpsLat, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsLat;
     break;
 
     case gpsLonCom:
-      dtostrf(gpsLon, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsLon;
     break;
 
     case gpsVCom:
-      dtostrf(gpsV, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsV;
     break;
 
     case gpsPsiCom:
-      dtostrf(gpsLat, 8, 5, byteArray);
-      Wire.write(byteArray);
-      Wire.write("?");
+      dataBuffer[0] = gpsPsi;
     break;
 
-    default:
-    break;
+   default:
+   break;
   }
+
+  Wire.write((byte*) &dataBuffer[0], sizeof(float));
   
   
 }
