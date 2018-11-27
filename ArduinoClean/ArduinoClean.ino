@@ -35,7 +35,7 @@ Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1(LSM9DS1_XGCS, LSM9DS1_MCS);
 // global variables
 // (yucky but needed to make i2c interrupts work later)
 //
-float SERVOANGLENEUT = 98; //set this to the neutral point of the servo
+float SERVOANGLENEUT = 100; //set this to the neutral point of the servo
 float pingDistanceCM = 0.0; //ping sensor var
 float gyroZbias = 0.8; //degrees per second
 
@@ -113,19 +113,20 @@ void loop() {
 
   static float estHeading = psiD;
   static int count = 0;
+  static float curSpeed = 0;
   float* estHeadAddr = &estHeading; //maintain an address to the heading angle so we don't need to make a global variable
   
-  setSpeed(); //set the wheel speed
-  updateGPSData(); //updates our GPS data for
-  correctHeading(psiD, estHeadAddr); //keep track of the estimated heading angle and correct it as needed.
+  curSpeed = setSpeed(curSpeed); //set the wheel speed
+  //updateGPSData(); //updates our GPS data for
+  //correctHeading(psiD, estHeadAddr); //keep track of the estimated heading angle and correct it as needed.
+  correctHeadingRel(psiD);
 
   if(count > 100){
    //every few seconds print to Serial monitor some debugging information 
-   Serial.println("running");
-   Serial.print("Estimated Heading: "); Serial.println(*estHeadAddr);
+   //Serial.print("Estimated Heading: "); Serial.println(*estHeadAddr);
    Serial.print("Desired Heading: "); Serial.println(psiD);
-   Serial.print("GPS Heading: "); Serial.println(gpsPsi);
-   Serial.print("Desired Speed: "); Serial.println(dSpeed);  
+   //Serial.print("GPS Heading: "); Serial.println(gpsPsi);
+   //Serial.print("Desired Speed: "); Serial.println(dSpeed);  
     count = 0;
    }
 
@@ -171,22 +172,39 @@ float correctHeading(float psiD, float* estHeadingAddr) {
 }
 
 ////////////////////////////////////////////////////////////
+// Adjust wheels to set self to correct heading for Relative Heading
+////////////////////////////////////////////////////////////
+float correctHeadingRel(float psiD) {
+  //Simple P controller for adjusting heading based on psiD
+
+  float deltaTms = 20*0.001; //dt
+  float headingK = 10;
+
+  float servoAngleDeg = SERVOANGLENEUT - headingK * (psiD);
+  steeringServo.write(constrain(servoAngleDeg, SERVOANGLENEUT-25, SERVOANGLENEUT+25));
+
+  //return estHeading;
+}
+
+////////////////////////////////////////////////////////////
 // Update Value of speed
 ////////////////////////////////////////////////////////////
-void setSpeed() {
+float setSpeed(float prev) {
   //
   //Return the the value of the speed that we wish to drive at
   //
   getPingDistanceCM(); //get distance to furthest object
-    
-  // set wheel speed
-  if(pingDistanceCM >= 30){
-    motorPWM = constrain(dSpeed, 0, 250); //set motor speed
-  }
-  else {
-    motorPWM = 0; //emergency stop
-  }
+  int Kspeed = 5;
+  int Kint = 0.5;
+  float deltaTms = 20*0.001; //dt
+  
+  float error = pingDistanceCM - 30;
+  float intError = error*deltaTms;
+  byte val = Kspeed*constrain(error+intError,0,255);
+  Serial.println(val);
+  motorPWM = constrain(val,0,250);
   analogWrite(motorPin, motorPWM);
+  return 0.002069*val+.2824 //motor parameters
 }
 
 ////////////////////////////////////////////////////////////
@@ -458,4 +476,3 @@ void setupGPS() {
 SIGNAL(TIMER0_COMPA_vect) {
    char c = GPS.read();
 } 
-
